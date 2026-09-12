@@ -1,0 +1,37 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: kiln_auth_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASS}
+      MYSQL_DATABASE: ${DB_NAME}
+    ports:
+      # host:container - host port is intentionally NOT 3306 so this never
+      # collides with a MySQL that XAMPP/Laragon may already have installed.
+      - "${DB_PORT}:3306"
+    volumes:
+      - kiln_db_data:/var/lib/mysql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Optional but handy: a GUI to peek at the users table without
+  # needing to know MySQL well. Visit http://localhost:8080
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: kiln_auth_pma
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+    ports:
+      - "8081:80"
+    depends_on:
+      - mysql
+
+volumes:
+  kiln_db_data:
