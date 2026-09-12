@@ -1,8 +1,13 @@
-# Kiln — a self-contained auth system
+# Sienna Retail — store inventory, POS & analytics
 
 Vanilla HTML/CSS/JS frontend + plain PHP backend + MySQL. No framework,
 no build step, no Composer. Built so it clones onto a completely
 different machine and runs with two commands.
+
+Started life as a plain auth boilerplate ("Kiln"), now extended into a
+small retail store system: staff accounts, a product/category catalog,
+a point-of-sale checkout flow, and a live analytics dashboard — all on
+top of a 3NF MySQL schema.
 
 ## Why it's built this way
 
@@ -33,33 +38,52 @@ you're running.
 | Database | MySQL 8, via Docker                          |
 | Sessions | Native PHP sessions (httpOnly cookie)        |
 
+## Database schema (3NF)
+
+| Table                 | Purpose                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `users`                | Staff accounts for signing in (not customer data)               |
+| `categories`           | Product category classifications                               |
+| `products`             | Catalog items — pricing, stock level, reorder threshold         |
+| `sales`                | One row per checkout / receipt                                  |
+| `transaction_details`  | Line items per sale (junction table, resolves the M:N between `sales` and `products`) |
+
+`database/init.sql` creates all five tables and seeds:
+- 3 categories and 5 starter products
+- a ready-to-use login: **`admin` / `admin123`**
+- 4 demo transactions so the Analytics dashboard has real numbers on first run
+
 ## Folder structure
 
 ```
-kiln-auth/
+web-system-project-bsit/
 ├── docker-compose.yml       # MySQL (+ phpMyAdmin) containers
 ├── .env.example             # copy to .env — read by both Docker and PHP
 ├── database/
-│   └── init.sql             # schema, auto-run on first container boot
+│   └── init.sql             # schema + seed data, auto-run on first container boot
 ├── config/
 │   ├── database.php         # .env loader + PDO connection
 │   └── session.php          # hardened session bootstrap
 └── public/                  # PHP's document root — this is what's served
-    ├── index.php            # public landing page
+    ├── index.php            # public landing page (auth-aware CTAs)
     ├── login.php
     ├── register.php
-    ├── dashboard.php        # protected: redirects to login.php if no session
+    ├── dashboard.php        # protected: Store Analytics — redirects to login.php if no session
+    ├── pos.php              # protected: Point of Sale / checkout
     ├── partials/
-    │   ├── header.php       # shared <head> + nav
+    │   ├── header.php       # shared <head> + nav (auth-aware links)
     │   └── footer.php       # shared scripts + </body>
     ├── api/
     │   ├── register.php
     │   ├── login.php
     │   ├── logout.php
-    │   └── me.php           # session check, used by the nav's auth-state toggle
+    │   ├── me.php           # session check, used by the nav's auth-state toggle
+    │   ├── products.php     # list/create products
+    │   ├── sales.php        # process a checkout (writes sales + transaction_details, decrements stock)
+    │   └── analytics.php    # low stock, fast-movers, top revenue, total revenue
     └── assets/
         ├── css/style.css
-        └── js/               # api.js, nav.js, login.js, register.js
+        └── js/               # api.js, nav.js, login.js, register.js, pos.js, analytics.js
 ```
 
 ## First-time setup
@@ -72,24 +96,31 @@ click).
 
 ```bash
 # 1. clone
-git clone <your-repo-url> kiln-auth
-cd kiln-auth
+git clone <your-repo-url> web-system-project-bsit
+cd web-system-project-bsit
 
 # 2. copy the env file (both docker-compose and PHP read this one file)
   cp .env.example .env
 
-# 3. start the database — first run auto-creates the schema from database/init.sql
+# 3. start the database — first run auto-creates the schema + seed data from database/init.sql
 docker compose up -d
 
 # 4. start the app (from the project root)
 php -S localhost:8000 -t public
 ```
 
-Open **http://localhost:8000** — register an account, sign in, you'll
-land on the dashboard, sign out from the nav.
+Open **http://localhost:8000** and sign in with `admin` / `admin123`
+(or register a new staff account) to reach the Point of Sale and
+Analytics pages.
+
+> **Note:** `init.sql` only runs the *first* time the MySQL container's
+> data volume is created. If you've already started the container
+> before pulling schema/seed-data changes, run
+> `docker compose down -v && docker compose up -d` to wipe the volume
+> and re-run it (this deletes any data currently in that database).
 
 Optional: **http://localhost:8080** opens phpMyAdmin if you want to look
-at the `users` table directly (server: `mysql`, user: `root`, password:
+at the tables directly (server: `mysql`, user: `root`, password:
 whatever you set in `.env`).
 
 ## Moving to your friend's laptop
@@ -99,10 +130,9 @@ just:
 
 ```bash
 git clone <your-repo-url>
-cd kiln-auth
+cd web-system-project-bsit
 cp .env.example .env
 docker compose up -d
-cd /d C:\Websites\web-system-project-bsit
 php -S localhost:8000 -t public
 ```
 
@@ -112,22 +142,27 @@ time, so there's nothing to reconcile.
 
 ## API endpoints
 
-| Method | Path                | Body                        | Notes                                            |
-| ------ | ------------------- | --------------------------- | ------------------------------------------------ |
-| POST   | `/api/register.php` | `username, email, password` | Hashes password with `password_hash()`           |
-| POST   | `/api/login.php`    | `identifier, password`      | `identifier` = username or email; starts session |
-| POST   | `/api/logout.php`   | –                           | Destroys session                                 |
-| GET    | `/api/me.php`       | –                           | Returns current user or `401`                    |
+| Method | Path                 | Body                        | Notes                                                        |
+| ------ | -------------------- | ---------------------------- | ------------------------------------------------------------- |
+| POST   | `/api/register.php`  | `username, email, password`  | Hashes password with `password_hash()`                        |
+| POST   | `/api/login.php`     | `identifier, password`       | `identifier` = username or email; starts session               |
+| POST   | `/api/logout.php`    | –                             | Destroys session                                                |
+| GET    | `/api/me.php`        | –                             | Returns current user or `401`                                  |
+| GET    | `/api/products.php`  | –                             | List all products with category name (requires session)        |
+| POST   | `/api/products.php`  | `category_id, product_name, cost_price, selling_price, stock_quantity, reorder_level` | Add a product (requires session) |
+| POST   | `/api/sales.php`     | `cart: [{ product_id, quantity }]` | Processes a checkout: validates stock, inserts `sales` + `transaction_details`, decrements `stock_quantity` (requires session) |
+| GET    | `/api/analytics.php` | –                             | Returns total revenue, low-stock alerts, fast-movers, top revenue products (requires session) |
 
 ## Notes for production (not needed for local/dev use)
 
 This is set up for local development. Before deploying anywhere public:
 
 - Don't run MySQL as `root` for the app — create a dedicated DB user
-  with access only to the `kiln_auth` database.
+  with access only to the app's database.
 - Serve over HTTPS and set the session cookie's `secure` flag.
 - Add a CSRF token to the login/register forms.
 - Add basic rate limiting on `/api/login.php` to slow down brute-force
   attempts.
+- Remove or change the seeded `admin` / `admin123` account.
 - Set real, unique values in `.env` — never commit it (already in
   `.gitignore`).
